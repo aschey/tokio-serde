@@ -494,7 +494,7 @@ pub mod formats {
         use super::*;
         use std::io;
 
-        /// CBOR codec using [serde_cbor](https://docs.rs/serde_cbor) crate.
+        /// CBOR codec using [ciborium](https://docs.rs/ciborium) crate.
         #[cfg_attr(docsrs, doc(cfg(feature = "cbor")))]
         #[derive(Educe)]
         #[educe(Debug, Default)]
@@ -513,7 +513,7 @@ pub mod formats {
             type Error = io::Error;
 
             fn deserialize(self: Pin<&mut Self>, src: &BytesMut) -> Result<Item, Self::Error> {
-                serde_cbor::from_slice(src.as_ref()).map_err(into_io_error)
+                ciborium::de::from_reader(src.as_ref()).map_err(convert_deserialize_error)
             }
         }
 
@@ -524,30 +524,25 @@ pub mod formats {
             type Error = io::Error;
 
             fn serialize(self: Pin<&mut Self>, item: &SinkItem) -> Result<Bytes, Self::Error> {
-                serde_cbor::to_vec(item)
-                    .map_err(into_io_error)
-                    .map(Into::into)
+                let mut writer = Vec::new();
+                ciborium::ser::into_writer(item, &mut writer).map_err(convert_serialize_error)?;
+                Ok(writer.into())
             }
         }
 
-        fn into_io_error(cbor_err: serde_cbor::Error) -> io::Error {
-            use io::ErrorKind;
-            use serde_cbor::error::Category;
-            use std::error::Error;
+        fn convert_deserialize_error(cbor_err: ciborium::de::Error<io::Error>) -> io::Error {
+            use ciborium::de::Error;
+            match cbor_err {
+                Error::Io(err) => err,
+                _ => io::Error::new(io::ErrorKind::InvalidInput, cbor_err),
+            }
+        }
 
-            match cbor_err.classify() {
-                Category::Eof => io::Error::new(ErrorKind::UnexpectedEof, cbor_err),
-                Category::Syntax => io::Error::new(ErrorKind::InvalidInput, cbor_err),
-                Category::Data => io::Error::new(ErrorKind::InvalidData, cbor_err),
-                Category::Io => {
-                    // Extract the underlying io error's type
-                    let kind = cbor_err
-                        .source()
-                        .and_then(|err| err.downcast_ref::<io::Error>())
-                        .map(|io_err| io_err.kind())
-                        .unwrap_or(ErrorKind::Other);
-                    io::Error::new(kind, cbor_err)
-                }
+        fn convert_serialize_error(cbor_err: ciborium::ser::Error<io::Error>) -> io::Error {
+            use ciborium::ser::Error;
+            match cbor_err {
+                Error::Io(err) => err,
+                Error::Value(_) => io::Error::new(io::ErrorKind::InvalidInput, cbor_err),
             }
         }
     }
